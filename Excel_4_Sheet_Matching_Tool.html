@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Excel 4-Sheet Matching Tool</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+*{box-sizing:border-box;font-family:Segoe UI,Arial,sans-serif}
+body{margin:0;background:#f1f5f9;color:#172033;padding:18px}
+.wrap{max-width:900px;margin:auto}
+header{background:linear-gradient(135deg,#173b78,#2563eb);color:white;padding:22px;border-radius:16px;margin-bottom:16px}
+header h1{margin:0 0 8px;font-size:25px} header p{margin:0;opacity:.92}
+.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 3px 12px #0f172a12}
+h2{font-size:18px;margin:0 0 12px}
+label{display:block;font-weight:600;margin:10px 0 6px}
+input[type=file],select{width:100%;padding:11px;border:1px solid #cbd5e1;border-radius:9px;background:#fff}
+button{border:0;border-radius:10px;padding:12px 16px;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+.green{background:#15803d}.muted{color:#64748b;font-size:13px;line-height:1.5}
+.status{padding:11px;border-radius:9px;background:#eff6ff;margin-top:10px;white-space:pre-line}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.stat{background:#f8fafc;border:1px solid #e2e8f0;padding:12px;border-radius:10px;text-align:center}
+.stat b{display:block;font-size:23px;color:#1d4ed8}
+ul{padding-left:20px;line-height:1.7}
+@media(max-width:600px){body{padding:10px}.grid,.stats{grid-template-columns:1fr}header h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<h1>📊 Excel 4-Sheet Matching Tool</h1>
+<p>एक Excel फाइल की पहली शीट को बाकी तीन शीटों से मिलाएँ और अलग-अलग परिणाम वाली Excel डाउनलोड करें।</p>
+</header>
+
+<section class="card">
+<h2>STEP 1 – Excel फाइल अपलोड करें</h2>
+<label for="bookFile">एक Excel फाइल चुनें (.xlsx / .xls / .csv)</label>
+<input id="bookFile" type="file" accept=".xlsx,.xls,.xlsm,.csv">
+<p class="muted">फाइल में कम-से-कम 4 शीट होनी चाहिए। पहली शीट मुख्य सूची होगी और शीट 2, 3, 4 से उसका मिलान होगा।</p>
+<div id="fileStatus" class="status">अभी कोई फाइल अपलोड नहीं हुई है।</div>
+</section>
+
+<section class="card">
+<h2>STEP 2 – मिलान का कॉलम चुनें</h2>
+<div class="grid">
+<div><label for="masterCol">पहली शीट का कॉलम</label><select id="masterCol" disabled><option>पहले फाइल अपलोड करें</option></select></div>
+<div><label for="otherCol">बाकी तीन शीटों का कॉलम</label><select id="otherCol" disabled><option>पहले फाइल अपलोड करें</option></select></div>
+</div>
+<p class="muted">डिफॉल्ट रूप से LGD Code चुना जाएगा, यदि उपलब्ध हो। कॉलम का नाम अलग होने पर भी दोनों तरफ सही मिलान कॉलम चुन सकते हैं। तुलना में आगे-पीछे के स्पेस हटाए जाएँगे और अक्षरों का case अनदेखा होगा।</p>
+<div class="actions"><button id="runBtn" disabled>🔄 MATCH करें</button><button id="downloadBtn" class="green" disabled>⬇️ परिणाम Excel डाउनलोड करें</button></div>
+<div id="resultStatus" class="status">परिणाम देखने के लिए पहले फाइल अपलोड करें।</div>
+</section>
+
+<section class="card">
+<h2>STEP 3 – परिणाम में बनने वाली शीटें</h2>
+<ul>
+<li><b>01_Master_Unique:</b> पहली शीट की सूची, चुने गए कॉलम के आधार पर डुप्लीकेट हटाकर। पहली बार मिलने वाली पूरी row रखी जाएगी।</li>
+<li><b>02_Master_Remaining:</b> Unique Master में से वे rows जिनकी key शीट 2, 3 या 4 में कहीं भी नहीं मिली।</li>
+<li><b>03_Match_Sheet2:</b> दूसरी शीट की वे rows जिनकी key पहली शीट में मिली।</li>
+<li><b>04_Match_Sheet3:</b> तीसरी शीट की वे rows जिनकी key पहली शीट में मिली।</li>
+<li><b>05_Match_Sheet4:</b> चौथी शीट की वे rows जिनकी key पहली शीट में मिली।</li>
+</ul>
+<div id="stats" class="stats" style="display:none"></div>
+<p class="muted">नोट: शीट 2–4 में मौजूद matched rows अपनी मूल शीट के सभी कॉलम सहित परिणाम में आएँगी। खाली match key वाली rows को match नहीं माना जाएगा।</p>
+</section>
+</div>
+<script>
+let workbook=null, sheetRows=[], outputWorkbook=null;
+const $=id=>document.getElementById(id);
+function headersOf(rows){return rows && rows.length ? rows[0].map((v,i)=>String(v??'').trim() || `Column_${i+1}`) : [];}
+function keyNorm(v){
+  if(v===null||v===undefined)return '';
+  let s=String(v).trim();
+  if(!s)return '';
+  return s.toLocaleLowerCase();
+}
+function chooseDefault(headers){
+  const candidates=['lgd code','lgd','lgd_code','lgdcode','समग्र आईडी','id','code'];
+  for(const c of candidates){const i=headers.findIndex(h=>h.trim().toLowerCase()===c);if(i>=0)return String(i);}
+  return '0';
+}
+function fillSelect(sel,headers){
+  sel.innerHTML='';
+  headers.forEach((h,i)=>{const o=document.createElement('option');o.value=String(i);o.textContent=`${h} (Column ${i+1})`;sel.appendChild(o);});
+  sel.disabled=!headers.length;
+  if(headers.length)sel.value=chooseDefault(headers);
+}
+$('bookFile').addEventListener('change',async e=>{
+  const file=e.target.files[0]; workbook=null;sheetRows=[];outputWorkbook=null;
+  $('runBtn').disabled=true;$('downloadBtn').disabled=true;$('stats').style.display='none';
+  if(!file)return;
+  try{
+    const data=await file.arrayBuffer();
+    workbook=XLSX.read(data,{type:'array',cellDates:true});
+    if(workbook.SheetNames.length<4)throw new Error(`इस फाइल में ${workbook.SheetNames.length} शीट हैं। कम-से-कम 4 शीट जरूरी हैं।`);
+    sheetRows=workbook.SheetNames.slice(0,4).map(n=>{
+      const aoa=XLSX.utils.sheet_to_json(workbook.Sheets[n],{header:1,defval:'',raw:false});
+      if(!aoa.length)throw new Error(`"${n}" शीट खाली है।`);
+      return aoa;
+    });
+    const masterHeaders=headersOf(sheetRows[0]);
+    const otherHeaders=headersOf(sheetRows[1]);
+    fillSelect($('masterCol'),masterHeaders);
+    fillSelect($('otherCol'),otherHeaders);
+    $('fileStatus').textContent=`✓ ${file.name}\n${workbook.SheetNames.slice(0,4).map((n,i)=>`${i+1}. ${n} – ${Math.max(0,sheetRows[i].length-1)} data rows`).join('\n')}`;
+    $('runBtn').disabled=false;
+    $('resultStatus').textContent='फाइल तैयार है। दोनों मिलान कॉलम चुनकर MATCH करें।';
+  }catch(err){
+    workbook=null;sheetRows=[];$('fileStatus').textContent='त्रुटि: '+err.message;
+  }
+});
+function makeSheet(wb,name,rows){
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=(rows[0]||[]).map((_,i)=>({wch:Math.min(32,Math.max(12,...rows.slice(0,80).map(r=>String(r[i]??'').length+2)))}));
+  XLSX.utils.book_append_sheet(wb,ws,name);
+}
+$('runBtn').addEventListener('click',()=>{
+  try{
+    if(!workbook||sheetRows.length<4)throw new Error('पहले 4 शीट वाली Excel अपलोड करें।');
+    const mi=Number($('masterCol').value), oi=Number($('otherCol').value);
+    const master=sheetRows[0], masterHeader=master[0]||[];
+    const masterSeen=new Set(), unique=[masterHeader], masterKeys=new Set();
+    let duplicateCount=0, blankMaster=0;
+    for(const row of master.slice(1)){
+      const k=keyNorm(row[mi]);
+      if(!k){blankMaster++;continue;}
+      if(masterSeen.has(k)){duplicateCount++;continue;}
+      masterSeen.add(k);masterKeys.add(k);unique.push(row); 
+    }
+    const otherKeySets=sheetRows.slice(1).map(rows=>{
+      const set=new Set();
+      for(const row of rows.slice(1)){const k=keyNorm(row[oi]);if(k)set.add(k);}
+      return set;
+    });
+    const allOther=new Set(otherKeySets.flatMap(s=>[...s]));
+    const remaining=[unique[0],...unique.slice(1).filter(r=>!allOther.has(keyNorm(r[mi])))];
+    const matched=sheetRows.slice(1).map((rows)=>[
+      rows[0]||[],
+      ...rows.slice(1).filter(r=>{const k=keyNorm(r[oi]);return k && masterKeys.has(k);})
+    ]);
+    outputWorkbook=XLSX.utils.book_new();
+    makeSheet(outputWorkbook,'01_Master_Unique',unique);
+    makeSheet(outputWorkbook,'02_Master_Remaining',remaining);
+    matched.forEach((rows,i)=>makeSheet(outputWorkbook,`0${i+3}_Match_Sheet${i+2}`,rows));
+    const counts=[
+      ['Unique Master',unique.length-1],
+      ['Remaining',remaining.length-1],
+      ['Match Sheet 2',matched[0].length-1],
+      ['Match Sheet 3',matched[1].length-1],
+      ['Match Sheet 4',matched[2].length-1],
+      ['Master Duplicates Removed',duplicateCount]
+    ];
+    $('stats').innerHTML=counts.map(([n,v])=>`<div class="stat"><b>${v}</b><span>${n}</span></div>`).join('');
+    $('stats').style.display='grid';
+    $('resultStatus').textContent=`✓ तुलना पूरी हुई।\nपहली शीट में ${unique.length-1} unique records मिले।\n${duplicateCount} duplicate records हटाए गए।\n${blankMaster} खाली match-key वाली Master rows छोड़ी गईं।`;
+    $('downloadBtn').disabled=false;
+  }catch(err){$('resultStatus').textContent='त्रुटि: '+err.message;}
+});
+$('downloadBtn').addEventListener('click',()=>{
+  if(!outputWorkbook)return;
+  const stamp=new Date().toISOString().slice(0,10);
+  XLSX.writeFile(outputWorkbook,`Excel_Matching_Result_${stamp}.xlsx`);
+});
+</script>
+</body>
+</html>
